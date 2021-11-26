@@ -17,7 +17,7 @@ enum Token {
     EndLoop,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum ASTNode {
     IncrementPointer,
     DecrementPointer,
@@ -76,23 +76,28 @@ fn lexer(source: Vec<char>) -> Vec<Token> {
 
 fn parser(tokens: Vec<Token>) -> Result<Vec<ASTNode>, Error> {
     let mut ast = Vec::new();
-    let mut in_loop = false;
+    let mut in_loop: u32 = 0;
     for token in tokens.into_iter() {
         if let Token::EndLoop = token {
-            if !in_loop {
-                return Err(Error::MissingLoopOpening);
+            match in_loop.checked_sub(1u32) {
+                Some(v) => {
+                    in_loop = v;
+                }
+                None => {
+                    return Err(Error::MissingLoopOpening);
+                }
             }
-            in_loop = false;
         } else {
             {
-                if in_loop {
-                    match ast.last_mut().unwrap() {
-                        ASTNode::Loop(e) => e,
-                        _ => panic!("Expected Loop Node"),
+                let mut current_ast_arm = &mut ast;
+                for _ in 0..in_loop {
+                    if let ASTNode::Loop(v) = current_ast_arm.iter_mut().last().unwrap() {
+                        current_ast_arm = v;
+                    } else {
+                        panic!("Unexpected token");
                     }
-                } else {
-                    &mut ast
                 }
+                current_ast_arm
             }
             .push(match token {
                 Token::DecrementPointer => ASTNode::DecrementPointer,
@@ -102,14 +107,14 @@ fn parser(tokens: Vec<Token>) -> Result<Vec<ASTNode>, Error> {
                 Token::Output => ASTNode::Output,
                 Token::Input => ASTNode::Input,
                 Token::StartLoop => {
-                    in_loop = true;
+                    in_loop += 1;
                     ASTNode::Loop(Vec::new())
                 }
                 _ => panic!("Unexpected Token"),
             });
         }
     }
-    if in_loop {
+    if in_loop != 0{
         return Err(Error::MissingLoopDelimiter);
     }
     return Ok(ast);
@@ -138,7 +143,11 @@ impl Interpreter {
             ASTNode::IncrementPointer => match self.pointer.checked_add(1usize) {
                 Some(p) => {
                     self.pointer = p;
-                    Ok(())
+                    if 30_000 > self.pointer {
+                        Ok(())
+                    } else {
+                        Err(Error::MemPointerOverflow)
+                    }
                 }
                 None => Err(Error::MemPointerOverflow),
             },
