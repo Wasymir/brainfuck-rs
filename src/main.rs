@@ -4,8 +4,8 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode},
     ExecutableCommand,
 };
-use std::{fs, io::stdout};
-use clap::{Arg, App};
+use std::{fs::read_to_string, io::stdout};
+use clap::{Arg, App, ArgGroup};
 
 
 #[derive(Debug)]
@@ -36,7 +36,6 @@ enum Error {
     FileOpenError,
     MissingLoopDelimiter,
     MissingLoopOpening,
-    MemoryValueOverflow,
     MemoryPointerOverflow,
     NonAsciiOutputValue,
 }
@@ -136,18 +135,10 @@ impl RuntimeEnvironment {
                     }
                 }
                 AstNode::Increment => {
-                    if let Some(v) = self.c_mem().checked_add(1u8) {
-                        *self.c_mem_mut() = v;
-                    } else {
-                        return Err(Error::MemoryValueOverflow);
-                    }
+                    *self.c_mem_mut() = self.c_mem().wrapping_add(1u8);
                 }
                 AstNode::Decrement => {
-                    if let Some(v) = self.c_mem().checked_sub(1u8) {
-                        *self.c_mem_mut() = v;
-                    } else {
-                        return Err(Error::MemoryValueOverflow);
-                    }
+                    *self.c_mem_mut() = self.c_mem().wrapping_sub(1u8);
                 }
                 AstNode::Output => {
                     if self.c_mem().is_ascii() {
@@ -190,17 +181,33 @@ fn main() -> Result<(),Error> {
        .about("Just another Brainfuck interpreter")
        .arg(Arg::with_name("INPUT")
            .help("path to file to run")
-           .required(true)
            .index(1))
+       .arg(Arg::with_name("code")
+           .short("c")
+           .long("code")
+           .takes_value(true)
+           .help("runs code passed")
+           .value_name("CODE")
+       )
+       .group(ArgGroup::with_name("sources")
+           .args(&["INPUT", "code"])
+           .required(true)
+        )
        .get_matches();
-        let path = matches.value_of("INPUT").unwrap();
-        if let Ok(s) = fs::read_to_string(path) {
-            let tokens = lexer(s.chars().collect());
-            let ast = parser(tokens)?;
-            let mut runtimeenv = RuntimeEnvironment::new();
-            runtimeenv.run(&ast)?;
-            return Ok(());
+    let keys: Vec<char> = {
+        if let Some(p) = matches.value_of("INPUT") {
+            if let Ok(s) = read_to_string(p) {
+                s.chars().collect()
+            } else {
+                return Err(Error::FileOpenError);
+            }
         } else {
-            return Err(Error::FileOpenError);
+            matches.value_of("code").unwrap().chars().collect()
         } 
+    };
+    let tokens = lexer(keys);
+    let ast = parser(tokens)?;
+    let mut rtenv = RuntimeEnvironment::new();
+    rtenv.run(&ast)?;
+    Ok(())
 }
