@@ -1,3 +1,4 @@
+use clap::{App, Arg, ArgGroup};
 use crossterm::{
     event::{read, Event, KeyCode},
     style::Print,
@@ -5,8 +6,8 @@ use crossterm::{
     ExecutableCommand,
 };
 use std::{fs::read_to_string, io::stdout};
-use clap::{Arg, App, ArgGroup};
 
+const DEBUG_OUTPUT_SIZE: i32 = 10;
 
 #[derive(Debug)]
 enum Token {
@@ -18,6 +19,7 @@ enum Token {
     Input,
     EnterLoop,
     ExitLoop,
+    Debug,
 }
 
 #[derive(Debug)]
@@ -28,6 +30,7 @@ enum AstNode {
     DecrementPointer,
     Output,
     Input,
+    Debug,
     Loop(Vec<AstNode>),
 }
 
@@ -52,6 +55,7 @@ fn lexer(keys: Vec<char>) -> Vec<Token> {
             ',' => Token::Input,
             '[' => Token::EnterLoop,
             ']' => Token::ExitLoop,
+            '#' => Token::Debug,
             _ => {
                 continue;
             }
@@ -81,6 +85,7 @@ fn parser(tokens: Vec<Token>) -> Result<Vec<AstNode>, Error> {
             Token::Decrement => AstNode::Decrement,
             Token::Input => AstNode::Input,
             Token::Output => AstNode::Output,
+            Token::Debug => AstNode::Debug,
             Token::EnterLoop => {
                 loop_counter += 1;
                 AstNode::Loop(Vec::new())
@@ -161,6 +166,16 @@ impl RuntimeEnvironment {
                         }
                     }
                 }
+                AstNode::Debug => {
+                    for idx in 0..DEBUG_OUTPUT_SIZE {
+                        stdout()
+                            .execute(Print(format!(
+                                "{:?} -> [{:?}]\n",
+                                idx, self.mem[idx as usize]
+                            )))
+                            .unwrap();
+                    }
+                }
                 AstNode::Loop(l) => loop {
                     if self.c_mem() != &0u8 {
                         self.run(l)?;
@@ -174,26 +189,26 @@ impl RuntimeEnvironment {
     }
 }
 
-fn main() -> Result<(),Error> {
-   let matches = App::new("Rust Brainfuck Interpreter")
-       .version("1.0")
-       .author("Wasymir")
-       .about("Just another Brainfuck interpreter")
-       .arg(Arg::with_name("INPUT")
-           .help("path to file to run")
-           .index(1))
-       .arg(Arg::with_name("code")
-           .short("c")
-           .long("code")
-           .takes_value(true)
-           .help("runs code passed")
-           .value_name("CODE")
-       )
-       .group(ArgGroup::with_name("sources")
-           .args(&["INPUT", "code"])
-           .required(true)
+fn main() -> Result<(), Error> {
+    let matches = App::new("Rust Brainfuck Interpreter")
+        .version("1.0")
+        .author("Wasymir")
+        .about("Just another Brainfuck interpreter")
+        .arg(Arg::with_name("INPUT").help("path to file to run").index(1))
+        .arg(
+            Arg::with_name("code")
+                .short("c")
+                .long("code")
+                .takes_value(true)
+                .help("runs code passed")
+                .value_name("CODE"),
         )
-       .get_matches();
+        .group(
+            ArgGroup::with_name("sources")
+                .args(&["INPUT", "code"])
+                .required(true),
+        )
+        .get_matches();
     let keys: Vec<char> = {
         if let Some(p) = matches.value_of("INPUT") {
             if let Ok(s) = read_to_string(p) {
@@ -203,7 +218,7 @@ fn main() -> Result<(),Error> {
             }
         } else {
             matches.value_of("code").unwrap().chars().collect()
-        } 
+        }
     };
     let tokens = lexer(keys);
     let ast = parser(tokens)?;
