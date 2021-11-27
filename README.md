@@ -7,7 +7,7 @@ Simple Interpreter that runs bare Brainfuck and extends it with debug command `#
 ---
 ### Usage
 
-Just run the executable with file containing code as argument.
+Just run the executable with file that contains the code as argument.
 
 > brainfuck helloworld.b
 
