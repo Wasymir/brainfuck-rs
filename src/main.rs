@@ -4,237 +4,203 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode},
     ExecutableCommand,
 };
-use std::{env::args, fmt, fs::read_to_string, io::stdout};
+use std::{fs, io::stdout};
+use clap::{Arg, App};
 
+
+#[derive(Debug)]
 enum Token {
-    IncrementPointer,
-    DecrementPointer,
     Increment,
     Decrement,
+    IncrementPointer,
+    DecrementPointer,
     Output,
     Input,
-    StartLoop,
-    EndLoop,
+    EnterLoop,
+    ExitLoop,
 }
 
-#[derive(Debug, Clone)]
-enum ASTNode {
-    IncrementPointer,
-    DecrementPointer,
+#[derive(Debug)]
+enum AstNode {
     Increment,
     Decrement,
+    IncrementPointer,
+    DecrementPointer,
     Output,
     Input,
-    Loop(Vec<ASTNode>),
+    Loop(Vec<AstNode>),
 }
 
 #[derive(Debug)]
 enum Error {
+    FileOpenError,
     MissingLoopDelimiter,
     MissingLoopOpening,
-    MemValueOverflow,
-    MemPointerOverflow,
-    NonAsciiValue,
-    FileOpenError,
-}
-impl fmt::Display for Error {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-        write!(
-            fmt,
-            "{}",
-            match self {
-                Self::MissingLoopDelimiter => "Parser Error: Missing Loop Delimiter",
-                Self::MissingLoopOpening => "Parser Error: Missing Loop Opening",
-                Self::MemValueOverflow => "Runtime Error: Memory Value Overflow",
-                Self::MemPointerOverflow => "Runtime Error: Memory Pointer Overflow",
-                Self::NonAsciiValue => "Runtime Error: Tried To Output Non-Ascii Value",
-                Self::FileOpenError => "Couldn't open file",
-            }
-        )
-    }
+    MemoryValueOverflow,
+    MemoryPointerOverflow,
+    NonAsciiOutputValue,
 }
 
-fn lexer(source: Vec<char>) -> Vec<Token> {
+fn lexer(keys: Vec<char>) -> Vec<Token> {
     let mut tokens = Vec::new();
-    for key in source.into_iter() {
-        if ['<', '>', '-', '+', '[', ']', ',', '.'].contains(&key) {
-            tokens.push(match key {
-                '<' => Token::DecrementPointer,
-                '>' => Token::IncrementPointer,
-                '-' => Token::Decrement,
-                '+' => Token::Increment,
-                '.' => Token::Output,
-                ',' => Token::Input,
-                '[' => Token::StartLoop,
-                ']' => Token::EndLoop,
-                _ => panic!("unexpected token"),
-            });
-        }
+    for key in keys.iter() {
+        tokens.push(match key {
+            '>' => Token::IncrementPointer,
+            '<' => Token::DecrementPointer,
+            '+' => Token::Increment,
+            '-' => Token::Decrement,
+            '.' => Token::Output,
+            ',' => Token::Input,
+            '[' => Token::EnterLoop,
+            ']' => Token::ExitLoop,
+            _ => {
+                continue;
+            }
+        });
     }
     return tokens;
 }
 
-fn parser(tokens: Vec<Token>) -> Result<Vec<ASTNode>, Error> {
+fn parser(tokens: Vec<Token>) -> Result<Vec<AstNode>, Error> {
     let mut ast = Vec::new();
-    let mut in_loop: u32 = 0;
-    for token in tokens.into_iter() {
-        if let Token::EndLoop = token {
-            match in_loop.checked_sub(1u32) {
-                Some(v) => {
-                    in_loop = v;
-                }
-                None => {
-                    return Err(Error::MissingLoopOpening);
+    let mut loop_counter = 0;
+    for token in tokens.iter() {
+        {
+            let mut current_ast_branch = &mut ast;
+            for _ in 0..loop_counter {
+                current_ast_branch = match current_ast_branch.iter_mut().last().unwrap() {
+                    AstNode::Loop(l) => l,
+                    _ => panic!("Unexpected node"),
                 }
             }
-        } else {
-            {
-                let mut current_ast_arm = &mut ast;
-                for _ in 0..in_loop {
-                    if let ASTNode::Loop(v) = current_ast_arm.iter_mut().last().unwrap() {
-                        current_ast_arm = v;
-                    } else {
-                        panic!("Unexpected token");
-                    }
-                }
-                current_ast_arm
-            }
-            .push(match token {
-                Token::DecrementPointer => ASTNode::DecrementPointer,
-                Token::IncrementPointer => ASTNode::IncrementPointer,
-                Token::Decrement => ASTNode::Decrement,
-                Token::Increment => ASTNode::Increment,
-                Token::Output => ASTNode::Output,
-                Token::Input => ASTNode::Input,
-                Token::StartLoop => {
-                    in_loop += 1;
-                    ASTNode::Loop(Vec::new())
-                }
-                _ => panic!("Unexpected Token"),
-            });
+            current_ast_branch
         }
+        .push(match token {
+            Token::IncrementPointer => AstNode::IncrementPointer,
+            Token::DecrementPointer => AstNode::DecrementPointer,
+            Token::Increment => AstNode::Increment,
+            Token::Decrement => AstNode::Decrement,
+            Token::Input => AstNode::Input,
+            Token::Output => AstNode::Output,
+            Token::EnterLoop => {
+                loop_counter += 1;
+                AstNode::Loop(Vec::new())
+            }
+            Token::ExitLoop => {
+                loop_counter -= 1;
+                if loop_counter < 0 {
+                    return Err(Error::MissingLoopOpening);
+                } else {
+                    continue;
+                }
+            }
+        });
     }
-    if in_loop != 0{
+    if loop_counter != 0 {
         return Err(Error::MissingLoopDelimiter);
     }
     return Ok(ast);
 }
 
-struct Interpreter {
+struct RuntimeEnvironment {
     mem: [u8; 30_000],
     pointer: usize,
 }
-impl Interpreter {
+impl RuntimeEnvironment {
     fn new() -> Self {
-        Interpreter {
+        RuntimeEnvironment {
             mem: [0u8; 30_000],
             pointer: 0usize,
         }
     }
-    fn run_ast_node(&mut self, node: &ASTNode) -> Result<(), Error> {
-        match node {
-            ASTNode::DecrementPointer => match self.pointer.checked_sub(1usize) {
-                Some(p) => {
-                    self.pointer = p;
-                    Ok(())
-                }
-                None => Err(Error::MemPointerOverflow),
-            },
-            ASTNode::IncrementPointer => match self.pointer.checked_add(1usize) {
-                Some(p) => {
-                    self.pointer = p;
-                    if 30_000 > self.pointer {
-                        Ok(())
-                    } else {
-                        Err(Error::MemPointerOverflow)
+    fn c_mem(&self) -> &u8 {
+        &self.mem[self.pointer]
+    }
+    fn c_mem_mut(&mut self) -> &mut u8 {
+        &mut self.mem[self.pointer]
+    }
+    fn run(&mut self, ast: &Vec<AstNode>) -> Result<(), Error> {
+        for node in ast.iter() {
+            match node {
+                AstNode::IncrementPointer => {
+                    self.pointer += 1usize;
+                    if self.pointer > 30_000usize {
+                        return Err(Error::MemoryPointerOverflow);
                     }
                 }
-                None => Err(Error::MemPointerOverflow),
-            },
-            ASTNode::Decrement => match self.mem[self.pointer].checked_sub(1u8) {
-                Some(v) => {
-                    self.mem[self.pointer] = v;
-                    Ok(())
+                AstNode::DecrementPointer => {
+                    if let Some(v) = self.pointer.checked_sub(1usize) {
+                        self.pointer = v;
+                    } else {
+                        return Err(Error::MemoryPointerOverflow);
+                    }
                 }
-                None => Err(Error::MemValueOverflow),
-            },
-            ASTNode::Increment => match self.mem[self.pointer].checked_add(1u8) {
-                Some(v) => {
-                    self.mem[self.pointer] = v;
-                    Ok(())
+                AstNode::Increment => {
+                    if let Some(v) = self.c_mem().checked_add(1u8) {
+                        *self.c_mem_mut() = v;
+                    } else {
+                        return Err(Error::MemoryValueOverflow);
+                    }
                 }
-                None => Err(Error::MemValueOverflow),
-            },
-            ASTNode::Input => {
-                loop {
-                    match read().unwrap() {
-                        Event::Key(key) => match key.code {
-                            KeyCode::Char(c) => {
+                AstNode::Decrement => {
+                    if let Some(v) = self.c_mem().checked_sub(1u8) {
+                        *self.c_mem_mut() = v;
+                    } else {
+                        return Err(Error::MemoryValueOverflow);
+                    }
+                }
+                AstNode::Output => {
+                    if self.c_mem().is_ascii() {
+                        stdout().execute(Print(*self.c_mem() as char)).unwrap();
+                    } else {
+                        return Err(Error::NonAsciiOutputValue);
+                    }
+                }
+                AstNode::Input => {
+                    enable_raw_mode().unwrap();
+                    loop {
+                        if let Event::Key(k) = read().unwrap() {
+                            if let KeyCode::Char(c) = k.code {
                                 if c.is_ascii() {
-                                    self.mem[self.pointer] = c as u8;
+                                    *self.c_mem_mut() = c as u8;
+                                    disable_raw_mode().unwrap();
                                     break;
                                 }
                             }
-                            _ => {}
-                        },
-                        _ => {}
+                        }
                     }
                 }
-                Ok(())
-            }
-            ASTNode::Output => {
-                if self.mem[self.pointer].is_ascii() {
-                    stdout().execute(Print(self.mem[self.pointer] as char));
-                    Ok(())
-                } else {
-                    Err(Error::NonAsciiValue)
-                }
-            }
-            ASTNode::Loop(nodes) => {
-                loop {
-                    for loop_node in nodes.into_iter() {
-                        self.run_ast_node(loop_node);
-                    }
-                    if self.mem[self.pointer] == 0u8 {
+                AstNode::Loop(l) => loop {
+                    if self.c_mem() != &0u8 {
+                        self.run(l)?;
+                    } else {
                         break;
                     }
-                }
-                Ok(())
+                },
             }
         }
+        return Ok(());
     }
 }
-fn main() -> Result<(), Error> {
-    enable_raw_mode().unwrap();
-    let path = &args().collect::<Vec<String>>()[1];
-    match read_to_string(&path) {
-        Ok(s) => {
+
+fn main() -> Result<(),Error> {
+   let matches = App::new("Rust Brainfuck Interpreter")
+       .version("1.0")
+       .author("Wasymir")
+       .about("Just another Brainfuck interpreter")
+       .arg(Arg::with_name("INPUT")
+           .help("path to file to run")
+           .required(true)
+           .index(1))
+       .get_matches();
+        let path = matches.value_of("INPUT").unwrap();
+        if let Ok(s) = fs::read_to_string(path) {
             let tokens = lexer(s.chars().collect());
             let ast = parser(tokens)?;
-            let mut interpreter = Interpreter::new();
-            for (idx, node) in ast.iter().enumerate() {
-                match interpreter.run_ast_node(node) {
-                    Ok(_) => {}
-                    Err(e) => {
-                        stdout().execute(Print(format!(
-                            "Error at node: {:?}, index: {:?}",
-                            node, idx
-                        )));
-                        return Err(e);
-                    }
-                }
-            }
-        }
-        Err(e) => {
-            if path.is_empty() {
-                stdout().execute(Print("Please enter path to file as argument"));
-                return Ok(());
-            } else {
-                print!("{:?}", e);
-                return Err(Error::FileOpenError);
-            }
-        }
-    }
-    disable_raw_mode().unwrap();
-    return Ok(());
+            let mut runtimeenv = RuntimeEnvironment::new();
+            runtimeenv.run(&ast)?;
+            return Ok(());
+        } else {
+            return Err(Error::FileOpenError);
+        } 
 }
